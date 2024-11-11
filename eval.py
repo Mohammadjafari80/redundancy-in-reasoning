@@ -15,10 +15,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate the fine-tuned GPT-2 model.")
     parser.add_argument('--task', type=str, default='gsm8k', help='Task/dataset to use for evaluation.')
     parser.add_argument('--model_path', type=str, required=True, help='Path to the fine-tuned model.')
-    parser.add_argument('--include_reasoning', action='store_true', help='Include reasoning in the evaluation prompts.')
+    parser.add_argument('--injection_probability', type=float, default=0.0, help='Probability of Injecting a redundant sentence.')
     parser.add_argument('--temperature', type=float, default=0.7, help='Temperature for text generation.')
     parser.add_argument('--num_beams', type=int, default=3, help='Number of beams for beam search.')
-    parser.add_argument('--use_wandb', action='store_true', help='Log evaluation metrics to Weights & Biases.')
+    parser.add_argument('--use_wandb', type=bool, default=False, help='Log evaluation metrics to Weights & Biases.')
     parser.add_argument('--wandb_project', type=str, default='gpt2-evaluation', help='Weights & Biases project name.')
     parser.add_argument('--max_length', type=int, default=512, help='Maximum sequence length for tokenization.')
     parser.add_argument('--split', type=str, default='test', help='Dataset split to use for evaluation.')
@@ -40,7 +40,9 @@ def main():
         dataset_loader = GSM8K(
             split='test',
             include_answer=False,
-            include_reasoning=args.include_reasoning,
+            include_reasoning=False,
+            p=args.injection_probability,
+            seed=42
         )
         dataset = dataset_loader.dataset
     else:

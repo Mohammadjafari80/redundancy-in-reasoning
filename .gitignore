@@ -1,3 +1,5 @@
 wandb
 results
 __pycache__
+visualize.ipynb
+sweep.yaml

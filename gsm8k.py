@@ -1,19 +1,75 @@
 # gsm8k.py
 
 import logging
+import random
+import re
 from datasets import load_dataset
 
 logger = logging.getLogger(__name__)
 
 class GSM8K:
-    def __init__(self, split, include_answer=True, include_reasoning=True):
+    def __init__(self, split, include_answer=True, include_reasoning=True, p=0.0, seed=None):
         self.split = split
         self.include_answer = include_answer
         self.include_reasoning = include_reasoning
+        self.p = p
+        self.seed = seed
+
+        if self.seed is not None:
+            random.seed(self.seed)
+
+        # Load the dataset and collect sentences
         self.dataset = self.load_dataset()
 
-    def process_example(self, example):
+    def process_example(self, example, index):
+        # Set seed based on self.seed and index for reproducibility
+        if self.seed is not None:
+            random.seed(self.seed + index)
+
         question = example['question']
+
+        # With probability self.p, inject a random sentence
+        if random.random() < self.p:
+            # Split the question into sentences
+            question_sentences = re.split(r'(?<=[.!?]) +', question)
+            # Extract sentences that do not contain question marks
+            current_non_question_sentences = [s for s in question_sentences if '?' not in s]
+
+            # Exclude the last sentence if it usually asks the question
+            if '?' in question_sentences[-1]:
+                body_sentences = question_sentences[:-1]
+                last_sentence = question_sentences[-1]
+            else:
+                body_sentences = question_sentences
+                last_sentence = ''
+
+            # Create a set of sentences from the current question to exclude
+            current_sentences_set = set(current_non_question_sentences)
+
+            # Create a list of possible sentences to inject (excluding current example's sentences)
+            possible_sentences = [s for s in self.other_sentences if s not in current_sentences_set]
+
+            if possible_sentences:
+                # Choose a random sentence to inject
+                injected_sentence = random.choice(possible_sentences)
+
+                # Choose a random position to insert (not at the end)
+                if len(body_sentences) > 0:
+                    insert_position = random.randint(0, len(body_sentences) - 1)
+                    body_sentences.insert(insert_position, injected_sentence)
+                else:
+                    # If no body sentences, insert before the last sentence
+                    body_sentences = [injected_sentence]
+
+                # Reconstruct the question
+                if last_sentence:
+                    question = ' '.join(body_sentences + [last_sentence])
+                else:
+                    question = ' '.join(body_sentences)
+            else:
+                # No possible sentences to inject; proceed without injection
+                pass
+
         answer = example['answer']
         # Extract the reasoning steps and the final answer
         answer_delim = "#### "
@@ -55,8 +111,28 @@ class GSM8K:
         }
 
     def load_dataset(self):
-        # Load the GSM8K dataset with 'main' config
+        # Load the GSM8K dataset with the specified split
         dataset = load_dataset('gsm8k', 'main', split=self.split)
+        # Collect sentences from questions (excluding those containing question marks)
+        sentences = []
+        for example in dataset:
+            question_text = example['question']
+            # Split question into sentences
+            question_sentences = re.split(r'(?<=[.!?]) +', question_text)
+            # Exclude sentences that contain question marks
+            non_question_sentences = [s for s in question_sentences if '?' not in s]
+            sentences.extend(non_question_sentences)
+        self.other_sentences = sentences
+
         # Process the dataset
-        dataset = dataset.map(self.process_example)
+        dataset = dataset.map(self.process_example, with_indices=True)
         return dataset
+
+    def view_example(self, index):
+        example = self.dataset[index]
+        print("Question:")
+        print(example['question'])
+        print("\nProcessed Text:")
+        print(example['text'])
+        print("\nFinal Answer:")
+        print(example['final_answer'])
