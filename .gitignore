@@ -3,3 +3,4 @@ results
 __pycache__
 visualize.ipynb
 sweep.yaml
+gsmhardv2.jsonl

@@ -3,12 +3,13 @@
 import logging
 import random
 import re
+import json
 from datasets import load_dataset
 
 logger = logging.getLogger(__name__)
 
 class GSM8K:
-    def __init__(self, split, include_answer=True, include_reasoning=True, p=0.0, seed=None):
+    def __init__(self, split, include_answer=True, include_reasoning=True, p=0.0, few_shot=False, num_shots=8, seed=None):
         self.split = split
         self.include_answer = include_answer
         self.include_reasoning = include_reasoning
@@ -17,8 +18,12 @@ class GSM8K:
 
         if self.seed is not None:
             random.seed(self.seed)
-
-        # Load the dataset and collect sentences
+        
+        assert not few_shot or split == 'test'
+        
+        self.few_shot = few_shot # If true, each example is processed with num_shots examples before it
+        self.num_shots = num_shots
+        
         self.dataset = self.load_dataset()
 
     def process_example(self, example, index):
@@ -101,7 +106,7 @@ class GSM8K:
         else:
             # Do not include the answer at all
             code_solution = f"def solution():\n    \"\"\"{question}\"\"\""
-        # Construct the input text
+
         input_text = f"Q: {question}\n\n# solution in Python:\n\n{code_solution}\n\n"
         return {
             'text': input_text,
@@ -124,10 +129,34 @@ class GSM8K:
             sentences.extend(non_question_sentences)
         self.other_sentences = sentences
 
-        # Process the dataset
         dataset = dataset.map(self.process_example, with_indices=True)
         return dataset
 
+    def fewshot_examples(self):
+        """Loads and returns the few-shot examples for the task if they exist."""
+        with open(
+            "resources/gsm8k_few_shot_prompts.json",
+            "r",
+        ) as file:
+            examples = json.load(file)
+        return examples
+
+    def few_shot_prompt(self, examples):
+        """Two shot prompt format as source & target language documentation"""
+        prompt = ""
+        for question, solution in zip(
+            examples["questions"][:self.num_shots], examples["solutions"][:self.num_shots]
+        ):
+            prompt += f'''Q: {question}\n\n# solution in Python:\n\n\ndef solution():\n    """{question}"""\n{solution}\n\n\n\n\n\n'''
+            
+        return prompt
+
+    def get_prompt(self):
+        """Builds the prompt for the LM to generate from."""
+        examples = self.fewshot_examples()
+        prompt = self.few_shot_prompt(examples)
+        return prompt
+    
     def view_example(self, index):
         example = self.dataset[index]
         print("Question:")

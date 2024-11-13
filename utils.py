@@ -42,32 +42,54 @@ def extract_final_answer_from_code(code):
         sys.stdout = old_stdout
 
 def generate_answer_single_shot(
-    example, tokenizer, model, device, num_beams=3, temperature=0.7
+    examples, tokenizer, model, device, num_beams=3, temperature=0.7
 ):
-    input_text = example['text']
-    input_ids = tokenizer.encode(
-        input_text, return_tensors='pt'
+    input_texts = examples['text']
+    # Tokenize inputs
+    inputs = tokenizer(
+        input_texts,
+        return_tensors='pt',
+        padding=True,
+        truncation=True,
+        max_length=512,  # Adjust as needed
     ).to(device)
-    output_ids = model.generate(
-        input_ids,
-        max_length=input_ids.shape[1] + 300,  # Adjust as needed
-        num_beams=num_beams,
-        temperature=temperature,
-        do_sample=(temperature > 0),
-        pad_token_id=tokenizer.eos_token_id,
-    )
-    output_text = tokenizer.decode(
-        output_ids[0], skip_special_tokens=True
-    )
-    # Extract generated code after the prompt
-    generated_code = output_text[len(input_text):]
-    filtered_generated_code = ''
-    for generated_line in generated_code.split('\n'):
-        filtered_generated_code += f'{generated_line}\n'
-        if 'return' in generated_line:
-            break
-    example['generated_code'] = filtered_generated_code
-    return example
+    
+    with torch.no_grad():
+        if device.type == 'cuda':
+            # with torch.amp.autocast('cuda'):
+            output_ids = model.generate(
+                inputs['input_ids'],
+                attention_mask=inputs['attention_mask'],  # Try commenting out
+                max_length=inputs['input_ids'].shape[1] + 512,  # Total length
+                num_beams=num_beams,
+                temperature=temperature,
+                do_sample=(temperature > 0),
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        else:
+            output_ids = model.generate(
+                inputs['input_ids'],
+                # attention_mask=inputs['attention_mask'],  # Try commenting out
+                max_length=inputs['input_ids'].shape[1] + 512,
+                num_beams=num_beams,
+                temperature=temperature,
+                do_sample=(temperature > 0),
+                pad_token_id=tokenizer.eos_token_id,
+            )
+    
+    generated_codes = []
+    for idx in range(len(input_texts)):
+        generated_code = tokenizer.decode(output_ids[idx], skip_special_tokens=True)
+        generated_code = generated_code[len(input_texts[idx]):]
+        filtered_generated_code = ''
+        for generated_line in generated_code.split('\n'):
+            filtered_generated_code += f'{generated_line}\n'
+            if 'return' in generated_line:
+                break
+        generated_codes.append(filtered_generated_code)
+
+    examples['generated_code'] = generated_codes
+    return examples
 
 def evaluate_single_shot(example):
     generated_code = example['generated_code']

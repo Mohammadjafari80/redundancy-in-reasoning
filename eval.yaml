@@ -1,0 +1,29 @@
+program: eval.py
+method: grid  # Exhaustive grid search for all combinations
+name: gpt2-evaluation-sweep-base
+project: gpt2-evaluation-gsm8k
+parameters:
+  model_path:
+    values:
+      - "./results/no_reasoning_inj_0_0"
+      - "./results/no_reasoning_inj_0_5"
+      - "./results/no_reasoning_inj_1_0"
+      - "./results/reasoning_inj_0_0"
+      - "./results/reasoning_inj_0_5"
+      - "./results/reasoning_inj_1_0"
+  task:
+    value: gsm8k
+  injection_probability:
+    values: [0.0, 1.0]  # Values for "p"
+  temperature:
+    values: [1.0]  # Values for "temperatures"
+  num_beams:
+    values: [5]  # Values for "beam_sizes"
+  use_wandb:
+    value: true
+  wandb_project:
+    value: gpt2-evaluation
+  max_length:
+    value: 512
+  split:
+    value: test
