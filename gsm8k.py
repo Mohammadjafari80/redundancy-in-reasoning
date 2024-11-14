@@ -24,8 +24,15 @@ class GSM8K:
         self.few_shot = few_shot # If true, each example is processed with num_shots examples before it
         self.num_shots = num_shots
         
+        self.template = 'code'
+        
         self.dataset = self.load_dataset()
 
+    # def get_template(self):
+        
+    #     if self.template == 'code':
+    #         return lambda (prompt, question, answer): 
+          
     def process_example(self, example, index):
         # Set seed based on self.seed and index for reproducibility
         if self.seed is not None:
@@ -107,7 +114,11 @@ class GSM8K:
             # Do not include the answer at all
             code_solution = f"def solution():\n    \"\"\"{question}\"\"\""
 
-        input_text = f"Q: {question}\n\n# solution in Python:\n\n{code_solution}\n\n"
+        input_text = f"{code_solution}\n\n"
+        
+        if self.few_shot:
+            input_text = self.few_shot_prompt + input_text
+            
         return {
             'text': input_text,
             'final_answer': final_answer,
@@ -128,6 +139,9 @@ class GSM8K:
             non_question_sentences = [s for s in question_sentences if '?' not in s]
             sentences.extend(non_question_sentences)
         self.other_sentences = sentences
+        
+        if self.few_shot:
+            self.few_shot_prompt = self.get_prompt()
 
         dataset = dataset.map(self.process_example, with_indices=True)
         return dataset
@@ -147,7 +161,7 @@ class GSM8K:
         for question, solution in zip(
             examples["questions"][:self.num_shots], examples["solutions"][:self.num_shots]
         ):
-            prompt += f'''Q: {question}\n\n# solution in Python:\n\n\ndef solution():\n    """{question}"""\n{solution}\n\n\n\n\n\n'''
+            prompt += f'''def solution():\n    """{question}"""\n{solution}\n\n\n\n\n\n'''
             
         return prompt
 

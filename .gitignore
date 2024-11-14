@@ -1,5 +1,6 @@
 wandb
 results
+json-results
 __pycache__
 visualize.ipynb
 sweep.yaml
