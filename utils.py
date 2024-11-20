@@ -171,8 +171,55 @@ def extract_final_answer_from_code(code):
         # Restore stdout
         sys.stdout = old_stdout
 
+def extract_final_answer_from_text(output):
+    try:
+        import re
+        # Regex to match #### followed by any text or whitespace, then a number
+        # Handles optional commas in the number
+        match = re.search(r'####.*?([\d,]+(?:\.\d+)?)', output)
+        if match:
+            answer = match.group(1)
+             
+            for remove_char in [',', '$', '%', 'g']:
+                answer = answer.replace(remove_char, '')
+                
+            return int(answer)
+    except ValueError:
+        pass  # Parsing failed, return None by default
+
+    return None
+
+
+def generate_with_stop_strngs(stop_strings, inputs, tokenizer, model, device, num_beams, temperature, max_length):
+    
+    for stop_string in stop_strings:
+            output_ids = model.generate(
+                inputs['input_ids'],
+                attention_mask=inputs['attention_mask'], 
+                max_length=max_length, 
+                num_beams=num_beams,
+                temperature=temperature,
+                do_sample=(temperature > 0),
+                pad_token_id=tokenizer.eos_token_id,
+                stop_strings=stop_string,
+                tokenizer=tokenizer
+            )
+            
+            output_texts = [tokenizer.decode(output_id) for output_id in output_ids]
+            
+            inputs = tokenizer(
+                output_texts,
+                return_tensors='pt',
+                padding=True,
+                truncation=True,
+                max_length=max_length, 
+            ).to(device)
+    
+    return output_ids
+                    
+    
 def generate_answer(
-    examples, tokenizer, model, device, num_beams=3, temperature=0.7, max_length=512
+    examples, tokenizer, model, device, num_beams=3, temperature=0.7, max_length=512, model_name=""
 ):
     input_texts = examples['text']
     
@@ -187,18 +234,22 @@ def generate_answer(
     
     assert inputs['input_ids'].shape == inputs['attention_mask'].shape, "Input IDs and attention mask must have the same shape"
     
+    enabled= 'gemma' not in model_name
+    print(f'Is Autocast Enabled? {enabled}')
+    
     with torch.no_grad():
         if device.type == 'cuda':
-            # with torch.amp.autocast('cuda'):
-            output_ids = model.generate(
-                inputs['input_ids'],
-                attention_mask=inputs['attention_mask'], 
-                max_length=max_length, 
-                num_beams=num_beams,
-                temperature=temperature,
-                do_sample=(temperature > 0),
-                pad_token_id=tokenizer.eos_token_id,
-            )
+            with torch.amp.autocast('cuda', enabled=enabled):
+                output_ids = model.generate(
+                            inputs['input_ids'],
+                            attention_mask=inputs['attention_mask'], 
+                            max_length=max_length,
+                            max_new_tokens=512,
+                            num_beams=num_beams,
+                            temperature=temperature,
+                            do_sample=(temperature > 0),
+                            pad_token_id=tokenizer.eos_token_id,
+                        )
         else:
             output_ids = model.generate(
                 inputs['input_ids'],
@@ -210,22 +261,21 @@ def generate_answer(
                 pad_token_id=tokenizer.eos_token_id,
             )
     
-    generated_codes = []
+    generated_texts = []
     for idx in range(len(input_texts)):
-        generated_code = tokenizer.decode(output_ids[idx], skip_special_tokens=True)
-        generated_code = generated_code[len(input_texts[idx]):]
-        filtered_generated_code = ''
-        for generated_line in generated_code.split('\n'):
-            filtered_generated_code += f'{generated_line}\n'
-            if 'return' in generated_line:
-                break
-        generated_codes.append(filtered_generated_code)
+        generated_text = tokenizer.decode(output_ids[idx], skip_special_tokens=True)
+        generated_text = generated_text[len(input_texts[idx]):]
+        generated_texts.append(generated_text)
 
-    examples['generated_code'] = generated_codes
+    examples['generated_text'] = generated_texts
     return examples
 
-def evaluate(example):
-    generated_code = example['generated_code']
-    final_answer = extract_final_answer_from_code(generated_code)
+def evaluate(example, mode):
+    generated_text = example['generated_text']
+    if mode == 'gsm8k_code':
+        final_answer = extract_final_answer_from_code(generated_text)
+    elif mode == 'gsm8k_qa':
+        final_answer = extract_final_answer_from_text(generated_text)
+        
     example['predicted_answer'] = final_answer
     return example

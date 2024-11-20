@@ -9,7 +9,7 @@ from datasets import load_dataset
 logger = logging.getLogger(__name__)
 
 class GSM8K:
-    def __init__(self, split, include_answer=True, include_reasoning=True, p=0.0, few_shot=False, num_shots=8, seed=None):
+    def __init__(self, split, include_answer=True, include_reasoning=True, p=0.0, few_shot=False, num_shots=8, seed=None, cot=False, template="code"):
         self.split = split
         self.include_answer = include_answer
         self.include_reasoning = include_reasoning
@@ -23,16 +23,49 @@ class GSM8K:
         
         self.few_shot = few_shot # If true, each example is processed with num_shots examples before it
         self.num_shots = num_shots
-        
-        self.template = 'code'
+        self.cot = cot
+        self.template = template
+        self.examples = None
         
         self.dataset = self.load_dataset()
 
-    # def get_template(self):
+    def format_example(self, question, solution, answer):
+        example = ''
+        if self.template == 'code':
+            example = f'Question: {question}\n\n# solution in Python:\n\ndef solution():\n    """{question}"""\n'
+            
+            if solution is not None:
+                example += f'{solution}\n\n'
+                
+        elif self.template == 'qa':
+            example = f"Question: {question}\nSolution: "
+            
+            # if self.cot:
+            #     example += "Let's break it down step by step. "
+            
+            # example += '\n'
+            
+            if solution is not None:
+                def remove_placeholders(text):
+                    import re
+                    # Regex to match <<anything>>
+                    cleaned_text = re.sub(r'<<.*?>>', '', text)
+                    return cleaned_text
+
+                solution = '. '.join(solution.split('\n'))
+                solution = remove_placeholders(solution)
+                example += f"{solution}.\n"
+            
+            example = example.replace('..', '.')
+            
+            if answer is not None:
+                example += f"#### The final answer is {answer}\n\n"
+                
+        else:
+            raise ValueError('Format Not Implemented')
         
-    #     if self.template == 'code':
-    #         return lambda (prompt, question, answer): 
-          
+        return example
+                
     def process_example(self, example, index):
         # Set seed based on self.seed and index for reproducibility
         if self.seed is not None:
@@ -91,30 +124,16 @@ class GSM8K:
         else:
             reasoning = answer.strip()
             final_answer = ''
+            
         # Create the code solution
         if self.include_answer:
             if self.include_reasoning:
-                # Include reasoning as comments in the code
-                reasoning_lines = reasoning.split('\n')
-                reasoning_code = '\n'.join([f"    # {line}" for line in reasoning_lines])
-                code_solution = (
-                    f"def solution():\n"
-                    f"    \"\"\"{question}\"\"\"\n"
-                    f"{reasoning_code}\n"
-                    f"    return {repr(final_answer)}"
-                )
+                input_text = self.format_example(question, reasoning, final_answer)
             else:
-                # Do not include reasoning; directly return final_answer
-                code_solution = (
-                    f"def solution():\n"
-                    f"    \"\"\"{question}\"\"\"\n"
-                    f"    return {repr(final_answer)}"
-                )
+                input_text = self.format_example(question, None, final_answer)
         else:
-            # Do not include the answer at all
-            code_solution = f"def solution():\n    \"\"\"{question}\"\"\""
+            input_text = self.format_example(question, None, None)
 
-        input_text = f"{code_solution}\n\n"
         
         if self.few_shot:
             input_text = self.few_shot_prompt + input_text
@@ -141,36 +160,82 @@ class GSM8K:
         self.other_sentences = sentences
         
         if self.few_shot:
-            self.few_shot_prompt = self.get_prompt()
+            self.few_shot_prompt = self.build_prompt()
 
         dataset = dataset.map(self.process_example, with_indices=True)
         return dataset
 
-    def fewshot_examples(self):
+    def fewshot_examples_code(self):
         """Loads and returns the few-shot examples for the task if they exist."""
         with open(
             "resources/gsm8k_few_shot_prompts.json",
             "r",
         ) as file:
             examples = json.load(file)
-        return examples
-
-    def few_shot_prompt(self, examples):
-        """Two shot prompt format as source & target language documentation"""
-        prompt = ""
+        
+        new_examples = []
         for question, solution in zip(
             examples["questions"][:self.num_shots], examples["solutions"][:self.num_shots]
         ):
-            prompt += f'''def solution():\n    """{question}"""\n{solution}\n\n\n\n\n\n'''
+           new_examples.append(dict(
+                question=question,
+                solution=solution,
+                final_answer=None
+            ))
+
+            
+        return new_examples
+    
+    def fewshot_examples_qa(self):
+        """Loads and returns the few-shot examples for the task if they exist."""
+        
+        trainset = load_dataset('gsm8k', 'main', split=self.split)
+        
+        new_examples = []
+        
+        for example in trainset:
+            question = example['question']
+            answer = example['answer']
+            # Extract the reasoning steps and the final answer
+            answer_delim = "#### "
+            if answer_delim in answer:
+                reasoning = answer.split(answer_delim)[0].strip()
+                final_answer = answer.split(answer_delim)[-1].strip()
+            else:
+                reasoning = answer.strip()
+                final_answer = ''
+                
+            new_examples.append(dict(
+                question=question,
+                solution=reasoning,
+                final_answer=final_answer
+            ))
+
+            
+        return new_examples
+
+    def make_prompts(self):
+        """Builds the prompt for the LM to generate from."""
+        if self.template == 'code':
+            examples = self.fewshot_examples_code()
+        elif self.template == 'qa':
+            examples = self.fewshot_examples_qa()
+    
+        self.examples = examples        
+    
+    def build_prompt(self):
+        
+        if self.examples is None:
+            self.make_prompts()
+        
+        random.seed(42)
+        
+        prompt = '' 
+        for qna in random.sample(self.examples, self.num_shots):
+            prompt += self.format_example(qna['question'], qna['solution'], qna['final_answer'])
             
         return prompt
-
-    def get_prompt(self):
-        """Builds the prompt for the LM to generate from."""
-        examples = self.fewshot_examples()
-        prompt = self.few_shot_prompt(examples)
-        return prompt
-    
+         
     def view_example(self, index):
         example = self.dataset[index]
         print("Question:")

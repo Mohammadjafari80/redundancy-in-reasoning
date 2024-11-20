@@ -16,18 +16,19 @@ import os
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate the fine-tuned GPT-2 model.")
-    parser.add_argument('--task', type=str, default='gsm8k', help='Task/dataset to use for evaluation.')
+    parser.add_argument('--task', type=str, default='gsm8k', help='Task/dataset to use for evaluation.', choices=['gsm8k_qa', 'gsm8k_code'])
     parser.add_argument('--model_name', type=str, required=True, help='Name of the fine-tuned model.', default='gpt2-medium')
     parser.add_argument('--model_path', type=str, required=False, help='Path to the fine-tuned model.')
     parser.add_argument('--injection_probability', type=float, default=0.0, help='Probability of Injecting a redundant sentence.')
     parser.add_argument('--temperature', type=float, default=0.7, help='Temperature for text generation.')
     parser.add_argument('--num_beams', type=int, default=1, help='Number of beams for beam search.')
     parser.add_argument('--use_wandb', type=str, default='False', help='Log evaluation metrics to Weights & Biases.')
-    parser.add_argument('--wandb_project', type=str, default='gpt2-evaluation', help='Weights & Biases project name.')
+    parser.add_argument('--wandb_project', type=str, default='gsm8k-evaluation', help='Weights & Biases project name.')
     parser.add_argument('--split', type=str, default='test', help='Dataset split to use for evaluation.')
     parser.add_argument('--few_shot', type=str, default='False', help='Enable few-shot evaluation.')
     parser.add_argument('--num_shots', type=int, default=8, help='Number of shots for fewshot evaluation.')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size for evaluation.')
+    # parser.add_argument('--format_mode', type=str, default='qa', help='Type of formatting used for GSM8K')
     return parser.parse_args()
 
 def main():
@@ -36,16 +37,23 @@ def main():
     args.use_wandb = args.use_wandb.lower() == 'true'
     args.few_shot = args.few_shot.lower() == 'true'
     
+    print(args)
+    
     # Set up logging
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
 
+    filename = f"{args.task}_no-cot_{args.model_name}_inj{args.injection_probability}_temp{args.temperature}_beams{args.num_beams}_split{args.split}"
+    if args.few_shot:
+        filename += f"_fewshot{args.num_shots}"
+        
     if args.use_wandb:
-        wandb.init(project=args.wandb_project, config=vars(args))
+        wandb.init(project=args.wandb_project, config=vars(args), name=filename, tags=[args.model_name, args.task, 'no-cot'])
 
     # Load and process the dataset based on the task
-    if args.task == 'gsm8k':
+    if args.task.startswith('gsm8k'):
         from gsm8k import GSM8K
+        template = args.task.split('_')[-1]
         dataset_loader = GSM8K(
             split=args.split,
             include_answer=False,
@@ -53,33 +61,32 @@ def main():
             p=args.injection_probability,
             few_shot=args.few_shot,
             num_shots=args.num_shots,
-            seed=42
+            seed=42,
+            template=template,
+            cot=True
         )
-        dataset_loader.view_example(0) # just to see an example while running
+        dataset_loader.view_example(0) 
         dataset = dataset_loader.dataset
     else:
         raise ValueError(f"Unsupported task: {args.task}")
 
     
     # dataset_size = len(dataset)
-    # subset_size = max(1, int(0.1 * dataset_size))  # Ensure at least one example
+    # subset_size = max(1, int(0.01 * dataset_size))  # Ensure at least one example
     # dataset = dataset.select(range(subset_size))
     
     # Initialize tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name, padding_side='left')
     
     if args.model_path is not None:
-        model = AutoModelForCausalLM.from_pretrained(args.model_path, torch_dtype="auto")
+        model = AutoModelForCausalLM.from_pretrained(args.model_path, torch_dtype='auto')
     else:
-        model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype="auto") 
-    
-    print(model)
+        model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype='auto') 
     
     # Set padding token if not already set
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = 'left'
-
+   
     # Update model configuration for padding
     model.config.pad_token_id = tokenizer.pad_token_id
     
@@ -99,21 +106,21 @@ def main():
     # Generate answers and evaluate
     dataset = dataset.map(
         lambda x: generate_answer(
-            x, tokenizer, model, device, args.num_beams, args.temperature, max_length=max_length
+            x, tokenizer, model, device, args.num_beams, args.temperature, max_length=max_length, model_name=args.model_name
         ),
         batched=True,
         batch_size=args.batch_size,
     )
-    dataset = dataset.map(evaluate)
+    
+    dataset = dataset.map(lambda x: evaluate(x, args.task))
     
     def evaluate_accuracy(example):
-        predicted_answer = extract_final_answer_from_code(example['generated_code'])
-        example['predicted_answer'] = predicted_answer
+        predicted_answer = example['predicted_answer'] 
         final_answer = example['final_answer']
         example['correct'] = False
         try:
-            pred_value = float(predicted_answer)
-            final_value = float(final_answer)
+            pred_value = float(str(predicted_answer).replace(',', ''))
+            final_value = float(str(final_answer).replace(',', ''))
             if abs(pred_value - final_value) < 1e-3:
                 example['correct'] = True
         except (ValueError, TypeError):
@@ -139,9 +146,6 @@ def main():
         # Remove illegal characters for filenames
         return re.sub(r'[<>:"/\\|?*]', '', filename)
 
-    filename = f"{args.task}_{args.model_name}_inj{args.injection_probability}_temp{args.temperature}_beams{args.num_beams}_split{args.split}"
-    if args.few_shot:
-        filename += f"_fewshot{args.num_shots}"
     filename = sanitize_filename(filename)
     filename += ".jsonl"
 
