@@ -1,11 +1,9 @@
-# train.py
-
 import argparse
 import logging
 import torch
 from transformers import (
-    GPT2Tokenizer,
-    GPT2LMHeadModel,
+    AutoTokenizer,
+    AutoModelForCausalLM,
     Trainer,
     TrainingArguments,
     DataCollatorForLanguageModeling,
@@ -14,17 +12,17 @@ import wandb
 from utils import tokenize_function
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Fine-tune GPT-2 model for code generation.")
+    parser = argparse.ArgumentParser(description="Fine-tune a model for code generation.")
     parser.add_argument('--task', type=str, default='gsm8k', help='Task/dataset to use for training.')
     parser.add_argument('--model_name_or_path', type=str, default='gpt2-medium', help='Pretrained model or path.')
     parser.add_argument('--output_dir', type=str, default='./results', help='Directory to save the fine-tuned model.')
-    parser.add_argument('--include_reasoning',  type=str, default='False', help='Include reasoning in training data.')
+    parser.add_argument('--include_reasoning', type=str, default='False', help='Include reasoning in training data.')
     parser.add_argument('--num_train_epochs', type=int, default=3, help='Number of training epochs.')
     parser.add_argument('--injection_probability', type=float, default=0.0, help='Probability of Injecting a redundant sentence.')
     parser.add_argument('--per_device_train_batch_size', type=int, default=4, help='Training batch size per device.')
     parser.add_argument('--learning_rate', type=float, default=2e-5, help='Learning rate for training.')
-    parser.add_argument('--use_wandb',  type=str, default='False', help='Log training metrics to Weights & Biases.')
-    parser.add_argument('--wandb_project', type=str, default='gpt2-finetuning', help='Weights & Biases project name.')
+    parser.add_argument('--use_wandb', type=str, default='False', help='Log training metrics to Weights & Biases.')
+    parser.add_argument('--wandb_project', type=str, default='llm-finetuning', help='Weights & Biases project name.')
     parser.add_argument('--max_length', type=int, default=512, help='Maximum sequence length for tokenization.')
     return parser.parse_args()
 
@@ -33,12 +31,12 @@ def main():
 
     args.include_reasoning = args.include_reasoning.lower() == 'true'
     args.use_wandb = args.use_wandb.lower() == 'true'
-    
+
     # Dynamically set output_dir based on parameters
     reasoning_suffix = "reasoning" if args.include_reasoning else "no_reasoning"
     inj_prob_suffix = f"inj_{args.injection_probability:.1f}".replace('.', '_')
     args.output_dir = f"./results/{reasoning_suffix}_{inj_prob_suffix}"
-        
+
     # Set up logging
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -61,10 +59,11 @@ def main():
         raise ValueError(f"Unsupported task: {args.task}")
 
     # Initialize tokenizer and model
-    tokenizer = GPT2Tokenizer.from_pretrained(args.model_name_or_path)
-    tokenizer.pad_token = tokenizer.eos_token
-    model = GPT2LMHeadModel.from_pretrained(args.model_name_or_path)
-    model.config.pad_token_id = tokenizer.eos_token_id
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, padding_side='left')
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path)
+    model.config.pad_token_id = tokenizer.pad_token_id
 
     # Move model to GPU if available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
