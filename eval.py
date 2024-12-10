@@ -1,5 +1,3 @@
-# eval.py
-
 import argparse
 import logging
 import torch
@@ -13,6 +11,7 @@ from utils import (
 import json
 import re
 import os
+from peft import PeftModel, LoraConfig, TaskType
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate the fine-tuned GPT-2 model.")
@@ -28,17 +27,18 @@ def parse_args():
     parser.add_argument('--few_shot', type=str, default='False', help='Enable few-shot evaluation.')
     parser.add_argument('--num_shots', type=int, default=8, help='Number of shots for fewshot evaluation.')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size for evaluation.')
-    # parser.add_argument('--format_mode', type=str, default='qa', help='Type of formatting used for GSM8K')
+    parser.add_argument('--use_lora', type=str, default='False', help='Use LoRA for evaluation.')
     return parser.parse_args()
 
 def main():
     args = parse_args()
-    
+
     args.use_wandb = args.use_wandb.lower() == 'true'
     args.few_shot = args.few_shot.lower() == 'true'
-    
+    args.use_lora = args.use_lora.lower() == 'true'
+
     print(args)
-    
+
     # Set up logging
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -46,9 +46,9 @@ def main():
     filename = f"{args.task}_no-cot_{args.model_name}_inj{args.injection_probability}_temp{args.temperature}_beams{args.num_beams}_split{args.split}"
     if args.few_shot:
         filename += f"_fewshot{args.num_shots}"
-        
+
     if args.use_wandb:
-        wandb.init(project=args.wandb_project, config=vars(args), name=filename, tags=[args.model_name, args.task, 'no-cot'])
+        wandb.init(project=args.wandb_project, config=vars(args), name=filename, tags=[args.model_name, args.task, 'cot'])
 
     # Load and process the dataset based on the task
     if args.task.startswith('gsm8k'):
@@ -65,38 +65,44 @@ def main():
             template=template,
             cot=True
         )
-        dataset_loader.view_example(0) 
+        dataset_loader.view_example(0)
         dataset = dataset_loader.dataset
     else:
         raise ValueError(f"Unsupported task: {args.task}")
 
-    
-    # dataset_size = len(dataset)
-    # subset_size = max(1, int(0.01 * dataset_size))  # Ensure at least one example
-    # dataset = dataset.select(range(subset_size))
-    
     # Initialize tokenizer and model
+    print(args.model_name)
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, padding_side='left')
-    
+
     if args.model_path is not None:
-        model = AutoModelForCausalLM.from_pretrained(args.model_path, torch_dtype='auto')
+        lora_suffix = "lora" if args.use_lora else ""
+        # model_path = f"results/{args.model_name}/lora/{args.model_path}"
+        model_path = args.model_path
+        if args.use_lora:
+            model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype='auto')
+            model = PeftModel.from_pretrained(model, model_path)
+            logger.info(f"LoRA model loaded from {model_path}")
+        else:
+            model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype='auto')
+            logger.info(f"Full model loaded from {model_path}")
     else:
-        model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype='auto') 
-    
+        model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype='auto')
+        logger.info(f"Model loaded from {args.model_name}")
+
     # Set padding token if not already set
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-   
+
     # Update model configuration for padding
     model.config.pad_token_id = tokenizer.pad_token_id
-    
+
     max_length = 512
 
     if args.few_shot:
         max_length = max_length = min(model.config.max_position_embeddings, 2048)
-    
+
     print(f"Max length: {max_length}")
-    
+
     # Move model to GPU if available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
@@ -111,11 +117,11 @@ def main():
         batched=True,
         batch_size=args.batch_size,
     )
-    
+
     dataset = dataset.map(lambda x: evaluate(x, args.task))
-    
+
     def evaluate_accuracy(example):
-        predicted_answer = example['predicted_answer'] 
+        predicted_answer = example['predicted_answer']
         final_answer = example['final_answer']
         example['correct'] = False
         try:
@@ -129,13 +135,12 @@ def main():
         return example
 
     dataset = dataset.map(evaluate_accuracy)
-    
-    # Calculate accuracy    
+
+    # Calculate accuracy
     correct = sum(1 for example in dataset if example['correct'])
     total = len(dataset)
     accuracy = correct / total
     print(f"Accuracy: {accuracy:.2%}")
-
 
     if args.use_wandb:
         wandb.log({'accuracy': accuracy})

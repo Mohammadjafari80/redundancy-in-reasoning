@@ -183,7 +183,7 @@ def extract_final_answer_from_text(output):
             for remove_char in [',', '$', '%', 'g']:
                 answer = answer.replace(remove_char, '')
                 
-            return int(answer)
+            return float(answer)
     except ValueError:
         pass  # Parsing failed, return None by default
 
@@ -279,3 +279,63 @@ def evaluate(example, mode):
         
     example['predicted_answer'] = final_answer
     return example
+
+
+class ContrastivePreprocess:
+    def __init__(self, ds, tokenizer):
+        self.ds = ds
+        self.tokenizer = tokenizer
+        self._preprocess()
+    
+    def _tokenize(self, text, id, is_label=False):
+        out = self.tokenizer(text, 
+                    padding='max_length', 
+                    truncation=True, 
+                    return_tensors="pt", 
+                    max_length=512)
+        
+        out[id + '_input_ids'] = out.pop('input_ids')
+        out[id + '_attention_mask'] = out.pop('attention_mask')
+
+        return out
+    
+    def _preprocess(self):
+        
+        
+        def add_eos(examples):
+            return {
+                'text': examples['text'],
+                'query': [q + self.tokenizer.eos_token for q in examples['raw_question']],
+                'pos': [q + self.tokenizer.eos_token for q in examples['question']],
+                'hard_neg': [q + self.tokenizer.eos_token for q in examples['injected_question']]
+            }
+        
+        # Apply EOS addition
+        self.ds = self.ds.map(add_eos, batched=True)
+        
+        self.ds = self.ds.map(
+            lambda x: {'text': x['text']}, batched=True)
+        
+        self.ds = self.ds.map(
+            lambda x: self._tokenize(x['text'], 'text'), batched=True)
+        
+        self.ds = self.ds.map(
+            lambda x: self._tokenize(x['solution_text'], 'solution_text'), batched=True)
+        
+        self.ds = self.ds.map(
+            lambda x: self._tokenize(x['raw_question'], 'query'), batched=True)
+        
+        self.ds = self.ds.map(
+            lambda x: self._tokenize(x['redundant_question'], 'pos'), batched=True)
+        
+        self.ds = self.ds.map(
+            lambda x: self._tokenize(x['injected_question'], 'hard_neg'), batched=True)
+        
+        self.ds.set_format(
+            type="torch", 
+            columns=["solution_text_input_ids", "solution_text_attention_mask",
+                     "text_input_ids", "text_attention_mask",
+                     "query_input_ids", "query_attention_mask",
+                     "pos_input_ids", "pos_attention_mask",
+                     "hard_neg_input_ids", "hard_neg_attention_mask", ]
+        )

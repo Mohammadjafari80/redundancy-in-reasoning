@@ -26,8 +26,11 @@ class GSM8K:
         self.cot = cot
         self.template = template
         self.examples = None
+        print('DIS')
         
         self.dataset = self.load_dataset()
+        
+        print('DISS')
 
     def format_example(self, question, solution, answer):
         example = ''
@@ -40,8 +43,8 @@ class GSM8K:
         elif self.template == 'qa':
             example = f"Question: {question}\nSolution: "
             
-            # if self.cot:
-            #     example += "Let's break it down step by step. "
+            if self.cot:
+                example += "Let's break it down step by step. "
             
             # example += '\n'
             
@@ -71,50 +74,59 @@ class GSM8K:
         if self.seed is not None:
             random.seed(self.seed + index)
 
-        question = example['question']
+        # Always capture the original raw question
+        raw_question = example['question']
+        
+        # Initialize variables for redundant and inserted questions
+        redundant_question = raw_question
+        injected_sentence = None
+        injected_sentence_source_question = raw_question
+        
+        # Attempt to inject a sentence
+        # Split the question into sentences
+        question_sentences = re.split(r'(?<=[.!?]) +', raw_question)
+        # Extract sentences that do not contain question marks
+        current_non_question_sentences = [s for s in question_sentences if '?' not in s]
 
-        # With probability self.p, inject a random sentence
-        if random.random() < self.p:
-            # Split the question into sentences
-            question_sentences = re.split(r'(?<=[.!?]) +', question)
-            # Extract sentences that do not contain question marks
-            current_non_question_sentences = [s for s in question_sentences if '?' not in s]
+        # Exclude the last sentence if it usually asks the question
+        if '?' in question_sentences[-1]:
+            body_sentences = question_sentences[:-1]
+            last_sentence = question_sentences[-1]
+        else:
+            body_sentences = question_sentences
+            last_sentence = ''
 
-            # Exclude the last sentence if it usually asks the question
-            if '?' in question_sentences[-1]:
-                body_sentences = question_sentences[:-1]
-                last_sentence = question_sentences[-1]
+        # Create a set of sentences from the current question to exclude
+        current_sentences_set = set(current_non_question_sentences)
+
+        # Create a list of possible sentences to inject (excluding current example's sentences)
+        possible_sentences = [s for s in self.other_sentences if s[0] not in current_sentences_set]
+
+        if possible_sentences:
+            # Choose a random sentence to inject
+            injected_sentence, injected_sentence_idx = random.choice(possible_sentences)
+
+            # Choose a random position to insert (not at the end)
+            if len(body_sentences) > 0:
+                insert_position = random.randint(0, len(body_sentences) - 1)
+                body_sentences.insert(insert_position, injected_sentence)
             else:
-                body_sentences = question_sentences
-                last_sentence = ''
+                # If no body sentences, insert before the last sentence
+                body_sentences = [injected_sentence]
 
-            # Create a set of sentences from the current question to exclude
-            current_sentences_set = set(current_non_question_sentences)
-
-            # Create a list of possible sentences to inject (excluding current example's sentences)
-            possible_sentences = [s for s in self.other_sentences if s not in current_sentences_set]
-
-            if possible_sentences:
-                # Choose a random sentence to inject
-                injected_sentence = random.choice(possible_sentences)
-
-                # Choose a random position to insert (not at the end)
-                if len(body_sentences) > 0:
-                    insert_position = random.randint(0, len(body_sentences) - 1)
-                    body_sentences.insert(insert_position, injected_sentence)
-                else:
-                    # If no body sentences, insert before the last sentence
-                    body_sentences = [injected_sentence]
-
-                # Reconstruct the question
-                if last_sentence:
-                    question = ' '.join(body_sentences + [last_sentence])
-                else:
-                    question = ' '.join(body_sentences)
+            # Reconstruct the redundant question
+            if last_sentence:
+                redundant_question = ' '.join(body_sentences + [last_sentence])
             else:
-                # No possible sentences to inject; proceed without injection
-                pass
+                redundant_question = ' '.join(body_sentences)
+            
+            # Capture the source question of the injected sentence
+            injected_sentence_source_question = self.org_dataset[injected_sentence_idx]['question']
+        
+        # Determine which question to use based on probability
+        question = (redundant_question if random.random() < self.p else raw_question)
 
+        # Rest of the original method remains the same
         answer = example['answer']
         # Extract the reasoning steps and the final answer
         answer_delim = "#### "
@@ -134,35 +146,43 @@ class GSM8K:
         else:
             input_text = self.format_example(question, None, None)
 
-        
         if self.few_shot:
             input_text = self.few_shot_prompt + input_text
             
         return {
             'text': input_text,
+            'solution_text': '\n'.join(input_text.split('\n')[1:]),
             'final_answer': final_answer,
-            'question': question,
+            'question': question,  # This is now the question used in processing
+            'raw_question': raw_question,  # Original question
+            'redundant_question': redundant_question,  # Question with injected sentence
             'answer': answer,
+            'injected_sentence': injected_sentence,
+            'injected_question': injected_sentence_source_question  # Source question of injected sentence
         }
 
     def load_dataset(self):
         # Load the GSM8K dataset with the specified split
-        dataset = load_dataset('gsm8k', 'main', split=self.split)
+        self.org_dataset = load_dataset('gsm8k', 'main', split=self.split)
+        dataset = self.org_dataset
+        
         # Collect sentences from questions (excluding those containing question marks)
         sentences = []
-        for example in dataset:
+        for idx, example in enumerate(dataset):
             question_text = example['question']
             # Split question into sentences
             question_sentences = re.split(r'(?<=[.!?]) +', question_text)
             # Exclude sentences that contain question marks
-            non_question_sentences = [s for s in question_sentences if '?' not in s]
+            non_question_sentences = [(s, idx) for s in question_sentences if '?' not in s]
             sentences.extend(non_question_sentences)
         self.other_sentences = sentences
         
         if self.few_shot:
             self.few_shot_prompt = self.build_prompt()
 
-        dataset = dataset.map(self.process_example, with_indices=True)
+        # Use with_indices=True to pass the index to the processing function
+        dataset = dataset.map(self.process_example, with_indices=True, load_from_cache_file=False)
+
         return dataset
 
     def fewshot_examples_code(self):
